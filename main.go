@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -203,11 +204,17 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case "enter", " ", "l", "right":
+		case "enter":
+			if len(m.tabs) > 0 {
+				tab := m.tabs[m.cursor]
+				_ = exec.Command("zellij", "action", "go-to-tab-by-id", strconv.Itoa(tab.ID)).Run()
+				return m, tea.Quit
+			}
+		case "tab", " ", "l", "right":
 			if len(m.tabs) > 0 {
 				m.cycleStatus(1)
 			}
-		case "h", "left":
+		case "shift+tab", "h", "left":
 			if len(m.tabs) > 0 {
 				m.cycleStatus(-1)
 			}
@@ -226,12 +233,6 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "K":
 			if len(m.tabs) > 0 && m.cursor > 0 {
 				m.moveTabInList(-1)
-			}
-		case "g":
-			if len(m.tabs) > 0 {
-				tab := m.tabs[m.cursor]
-				_ = exec.Command("zellij", "action", "go-to-tab-by-id", strconv.Itoa(tab.ID)).Run()
-				return m, tea.Quit
 			}
 		}
 	}
@@ -343,15 +344,73 @@ func (m model) View() string {
 	if m.mode == modeRename {
 		b.WriteString(helpStyle.Render("⏎ confirm • esc cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("↑/k ↓/j navigate • ←/h →/l/⏎ status • r rename • J/K move • g goto • q quit"))
+		b.WriteString(helpStyle.Render("↑/k ↓/j navigate • ⇥/⇧⇥ status • ⏎ goto • r rename • J/K move • q quit"))
 	}
 	return b.String()
 }
 
+func headlessCycle(dir int) error {
+	cfg := loadConfig()
+	tabs, err := listTabs(cfg)
+	if err != nil {
+		return err
+	}
+	activeID := currentTabID()
+	if activeID < 0 {
+		return fmt.Errorf("cannot determine current tab")
+	}
+	for _, t := range tabs {
+		if t.ID != activeID {
+			continue
+		}
+		n := len(cfg.Statuses)
+		newStatus := (t.Status + dir + n) % n
+		newName := cfg.Statuses[newStatus].Prefix + t.BaseName
+		return renameTab(t.ID, newName)
+	}
+	return fmt.Errorf("current tab not found in list")
+}
+
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "next":
+			if err := headlessCycle(1); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "prev":
+			if err := headlessCycle(-1); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		case "-h", "--help", "help":
+			fmt.Println("ztabs — Zellij Tab Status Manager")
+			fmt.Println()
+			fmt.Println("Usage:")
+			fmt.Println("  ztabs [flags]     open the interactive TUI")
+			fmt.Println("  ztabs next        cycle current tab status forward")
+			fmt.Println("  ztabs prev        cycle current tab status backward")
+			fmt.Println()
+			fmt.Println("TUI flags:")
+			fmt.Println("  --exit-mode MODE  switch zellij to MODE after the TUI exits")
+			fmt.Println("                    (e.g. normal, locked, pane, tab); empty = no switch")
+			return
+		}
+	}
+
+	exitMode := flag.String("exit-mode", "", "zellij input mode to switch to when the TUI exits")
+	flag.Parse()
+
 	p := tea.NewProgram(initialModel())
-	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+	_, runErr := p.Run()
+	if *exitMode != "" {
+		_ = exec.Command("zellij", "action", "switch-mode", *exitMode).Run()
+	}
+	if runErr != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", runErr)
 		os.Exit(1)
 	}
 }
