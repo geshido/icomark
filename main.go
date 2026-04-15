@@ -65,12 +65,29 @@ func loadConfig() Config {
 
 // Zellij interaction
 
+const commentPrefix = "💬 "
+
 type Tab struct {
 	ID       int
 	Position int
 	Name     string
 	BaseName string
 	Status   int
+	Comment  string
+}
+
+// buildTabName composes a zellij tab name from status/comment/baseName.
+// Layout: <status-prefix><comment-indicator?><baseName>.
+func buildTabName(cfg Config, statusIdx int, hasComment bool, baseName string) string {
+	var b strings.Builder
+	if statusIdx >= 0 && statusIdx < len(cfg.Statuses) {
+		b.WriteString(cfg.Statuses[statusIdx].Prefix)
+	}
+	if hasComment {
+		b.WriteString(commentPrefix)
+	}
+	b.WriteString(baseName)
+	return b.String()
 }
 
 func listTabs(cfg Config) ([]Tab, error) {
@@ -78,6 +95,8 @@ func listTabs(cfg Config) ([]Tab, error) {
 	if err != nil {
 		return nil, fmt.Errorf("zellij action list-tabs: %w", err)
 	}
+
+	comments, _ := loadComments()
 
 	var tabs []Tab
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
@@ -101,18 +120,27 @@ func listTabs(cfg Config) ([]Tab, error) {
 			Name:     name,
 			BaseName: baseName,
 			Status:   statusIdx,
+			Comment:  comments[baseName],
 		})
 	}
 	return tabs, nil
 }
 
+// parseTabName strips the optional status prefix and the optional 💬 comment
+// indicator from a raw zellij tab name. Returns the bare baseName and the
+// status index (0 = "none"). The comment itself lives in the sidecar file,
+// not in the name — only the 💬 indicator is cosmetic.
 func parseTabName(name string, cfg Config) (string, int) {
+	statusIdx := 0
 	for i, s := range cfg.Statuses {
 		if s.Prefix != "" && strings.HasPrefix(name, s.Prefix) {
-			return strings.TrimPrefix(name, s.Prefix), i
+			name = strings.TrimPrefix(name, s.Prefix)
+			statusIdx = i
+			break
 		}
 	}
-	return name, 0
+	name = strings.TrimPrefix(name, commentPrefix)
+	return name, statusIdx
 }
 
 func renameTab(id int, newName string) error {
@@ -134,6 +162,7 @@ type mode int
 const (
 	modeNormal mode = iota
 	modeRename
+	modeComment
 )
 
 type model struct {
@@ -184,8 +213,11 @@ func (m model) Init() tea.Cmd {
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.mode == modeRename {
+	switch m.mode {
+	case modeRename:
 		return m.updateRename(msg)
+	case modeComment:
+		return m.updateComment(msg)
 	}
 	return m.updateNormal(msg)
 }
@@ -226,6 +258,14 @@ func (m model) updateNormal(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.textInput.CursorEnd()
 				return m, textinput.Blink
 			}
+		case "c":
+			if len(m.tabs) > 0 {
+				m.mode = modeComment
+				m.textInput.SetValue(m.tabs[m.cursor].Comment)
+				m.textInput.Focus()
+				m.textInput.CursorEnd()
+				return m, textinput.Blink
+			}
 		case "J":
 			if len(m.tabs) > 0 && m.cursor < len(m.tabs)-1 {
 				m.moveTabInList(1)
@@ -247,11 +287,40 @@ func (m model) updateRename(msg tea.Msg) (tea.Model, tea.Cmd) {
 			newBase := m.textInput.Value()
 			if newBase != "" {
 				tab := &m.tabs[m.cursor]
+				oldBase := tab.BaseName
 				tab.BaseName = newBase
-				status := m.cfg.Statuses[tab.Status]
-				tab.Name = status.Prefix + newBase
+				tab.Name = buildTabName(m.cfg, tab.Status, tab.Comment != "", newBase)
 				_ = renameTab(tab.ID, tab.Name)
+				if oldBase != newBase {
+					_ = migrateTabState(oldBase, newBase)
+				}
 			}
+			m.mode = modeNormal
+			m.textInput.Blur()
+			return m, nil
+		case "esc":
+			m.mode = modeNormal
+			m.textInput.Blur()
+			return m, nil
+		}
+	}
+
+	var cmd tea.Cmd
+	m.textInput, cmd = m.textInput.Update(msg)
+	return m, cmd
+}
+
+func (m model) updateComment(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "enter":
+			tab := &m.tabs[m.cursor]
+			newText := m.textInput.Value()
+			tab.Comment = newText
+			_ = setComment(tab.BaseName, newText)
+			tab.Name = buildTabName(m.cfg, tab.Status, tab.Comment != "", tab.BaseName)
+			_ = renameTab(tab.ID, tab.Name)
 			m.mode = modeNormal
 			m.textInput.Blur()
 			return m, nil
@@ -271,9 +340,9 @@ func (m *model) cycleStatus(dir int) {
 	tab := &m.tabs[m.cursor]
 	n := len(m.cfg.Statuses)
 	tab.Status = (tab.Status + dir + n) % n
-	status := m.cfg.Statuses[tab.Status]
-	tab.Name = status.Prefix + tab.BaseName
+	tab.Name = buildTabName(m.cfg, tab.Status, tab.Comment != "", tab.BaseName)
 	_ = renameTab(tab.ID, tab.Name)
+	_ = setStatus(tab.BaseName, m.cfg.Statuses[tab.Status].Name)
 }
 
 func (m *model) moveTabInList(dir int) {
@@ -332,19 +401,31 @@ func (m model) View() string {
 		statusName := m.cfg.Statuses[tab.Status].Name
 		statusLabel := statusStyle.Render("[" + statusName + "]")
 
+		commentPreview := ""
+		if tab.Comment != "" {
+			preview := tab.Comment
+			if len([]rune(preview)) > 40 {
+				preview = string([]rune(preview)[:40]) + "…"
+			}
+			commentPreview = "  " + dimStyle.Render("— "+preview)
+		}
+
 		if m.mode == modeRename && i == m.cursor {
-			b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, statusLabel, m.textInput.View()))
+			b.WriteString(fmt.Sprintf("%s%s %s%s\n", cursor, statusLabel, m.textInput.View(), commentPreview))
+		} else if m.mode == modeComment && i == m.cursor {
+			b.WriteString(fmt.Sprintf("%s%s %s  %s %s\n", cursor, statusLabel, nameRender(tab.Name), dimStyle.Render("💬"), m.textInput.View()))
 		} else {
-			b.WriteString(fmt.Sprintf("%s%s %s\n", cursor, statusLabel, nameRender(tab.Name)))
+			b.WriteString(fmt.Sprintf("%s%s %s%s\n", cursor, statusLabel, nameRender(tab.Name), commentPreview))
 		}
 	}
 
 	b.WriteString("\n")
 	helpStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	if m.mode == modeRename {
+	switch m.mode {
+	case modeRename, modeComment:
 		b.WriteString(helpStyle.Render("⏎ confirm • esc cancel"))
-	} else {
-		b.WriteString(helpStyle.Render("↑/k ↓/j navigate • h/← l/→ status • ⏎ goto • r rename • J/K move • q quit"))
+	default:
+		b.WriteString(helpStyle.Render("↑/k ↓/j navigate • h/← l/→ status • ⏎ goto • r rename • c comment • J/K move • q quit"))
 	}
 	return b.String()
 }
@@ -365,8 +446,11 @@ func headlessCycle(dir int) error {
 		}
 		n := len(cfg.Statuses)
 		newStatus := (t.Status + dir + n) % n
-		newName := cfg.Statuses[newStatus].Prefix + t.BaseName
-		return renameTab(t.ID, newName)
+		newName := buildTabName(cfg, newStatus, t.Comment != "", t.BaseName)
+		if err := renameTab(t.ID, newName); err != nil {
+			return err
+		}
+		return setStatus(t.BaseName, cfg.Statuses[newStatus].Name)
 	}
 	return fmt.Errorf("current tab not found in list")
 }
@@ -386,13 +470,31 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "migrate-state", "migrate-comment":
+			// "migrate-comment" is kept as an alias so older builds of the
+			// background plugin keep working until it's rebuilt.
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "usage: ztabs migrate-state OLD NEW")
+				os.Exit(1)
+			}
+			// Inputs are raw zellij tab names — strip status/💬 prefixes to
+			// recover the baseName that the sidecar is keyed by.
+			cfg := loadConfig()
+			oldBase, _ := parseTabName(os.Args[2], cfg)
+			newBase, _ := parseTabName(os.Args[3], cfg)
+			if err := migrateTabState(oldBase, newBase); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
 		case "-h", "--help", "help":
 			fmt.Println("ztabs — Zellij Tab Status Manager")
 			fmt.Println()
 			fmt.Println("Usage:")
-			fmt.Println("  ztabs [flags]     open the interactive TUI")
-			fmt.Println("  ztabs next        cycle current tab status forward")
-			fmt.Println("  ztabs prev        cycle current tab status backward")
+			fmt.Println("  ztabs [flags]                 open the interactive TUI")
+			fmt.Println("  ztabs next                    cycle current tab status forward")
+			fmt.Println("  ztabs prev                    cycle current tab status backward")
+			fmt.Println("  ztabs migrate-state OLD NEW   rename sidecar key after tab rename")
 			fmt.Println()
 			fmt.Println("TUI flags:")
 			fmt.Println("  --exit-mode MODE  switch zellij to MODE after the TUI exits")
