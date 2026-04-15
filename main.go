@@ -344,7 +344,7 @@ func (m model) View() string {
 	if m.mode == modeRename {
 		b.WriteString(helpStyle.Render("⏎ confirm • esc cancel"))
 	} else {
-		b.WriteString(helpStyle.Render("↑/k ↓/j navigate • ⇥/⇧⇥ status • ⏎ goto • r rename • J/K move • q quit"))
+		b.WriteString(helpStyle.Render("↑/k ↓/j navigate • h/← l/→ status • ⏎ goto • r rename • J/K move • q quit"))
 	}
 	return b.String()
 }
