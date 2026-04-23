@@ -1,5 +1,9 @@
 # ztabs — Zellij Tab Status Manager
 
+<p align="center">
+  <img src="ztabs.png" alt="ztabs" width="320">
+</p>
+
 A small tool that turns Zellij tabs into a lightweight Kanban board. Each tab
 gets a **status** (`wip`, `review`, `test`, `done`, `blocked`, …) rendered as
 an emoji prefix in the tab bar, plus an optional **comment** stored in a
