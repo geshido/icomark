@@ -1,5 +1,9 @@
 # Icomark
 
+<p align="center">
+  <img src="assets/icomark.png" alt="Icomark logo" width="320">
+</p>
+
 Icomark adds lightweight workflow marks to terminal tabs and sessions. It uses
 emoji prefixes such as `🔨`, `👀`, `🧪`, `✅`, and `🚫`, plus an optional `💬`
 marker for comments.
