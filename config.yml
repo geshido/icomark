@@ -1,0 +1,13 @@
+statuses:
+  - name: none
+    prefix: ""
+  - name: wip
+    prefix: "🔨 "
+  - name: review
+    prefix: "👀 "
+  - name: test
+    prefix: "🧪 "
+  - name: done
+    prefix: "✅ "
+  - name: blocked
+    prefix: "🚫 "
