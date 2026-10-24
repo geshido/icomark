@@ -2,6 +2,9 @@
 name = "ztabs-plugin"
 version = "0.1.0"
 edition = "2021"
+description = "Zellij keybinding relay for Icomark tab status marks"
+license = "MIT"
+repository = "https://github.com/geshido/icomark"
 
 [dependencies]
 zellij-tile = "0.44"

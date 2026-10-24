@@ -1,140 +1,176 @@
-# ztabs — Zellij Tab Status Manager
+# Icomark
 
-<p align="center">
-  <img src="ztabs.png" alt="ztabs" width="320">
-</p>
+Icomark adds lightweight workflow marks to terminal tabs and sessions. It uses
+emoji prefixes such as `🔨`, `👀`, `🧪`, `✅`, and `🚫`, plus an optional `💬`
+marker for comments.
 
-A small tool that turns Zellij tabs into a lightweight Kanban board. Each tab
-gets a **status** (`wip`, `review`, `test`, `done`, `blocked`, …) rendered as
-an emoji prefix in the tab bar, plus an optional **comment** stored in a
-sidecar file.
+One shared core powers three backend-specific commands:
 
+| Command | Target |
+| --- | --- |
+| `ztabs` | Zellij tabs |
+| `atabs` | agterm sessions |
+| `htabs` | Herdr tabs |
+
+```text
+🔨 auth-refactor
+👀 💬 payments-migration
+✅ docs-cleanup
+🚫 flaky-e2e
 ```
-[wip]     🔨 auth-refactor            — waiting on review from @alice
-[review]  👀 payments-migration       — needs second pair of eyes
-[done]    ✅ docs-cleanup
-[blocked] 🚫 flaky-e2e                — blocked on CI fix
-```
 
-## Why
-
-Zellij tabs are ephemeral labels. When you juggle many tabs across branches or
-tickets, you lose track of what's in progress, what's waiting on someone, what
-you've already finished but haven't closed yet. Renaming tabs by hand to
-encode status is tedious, and any note longer than a word doesn't fit in the
-tab bar anyway.
-
-`ztabs` gives you:
-
-- **Status** — a one-keystroke cycle through configurable states, shown as an
-  emoji prefix on the tab name.
-- **Comments** — a sidecar "why is this tab blocked / what's the ticket /
-  what was I doing" note, with a 💬 indicator on tabs that have one.
-- **Persistence** — status and comments survive `zellij-session-manager` /
-  `resurrect`, keyed per session.
-- **Headless cycle** — `ztabs next` / `ztabs prev` to bump the current tab's
-  status from a keybinding without opening the TUI.
-
-## Requirements
-
-- [Zellij](https://zellij.dev/) (tested on 0.42+)
-- Go 1.22+ (to build the CLI)
-- Rust with the `wasm32-wasip1` target (only if you want the background
-  plugin — needed for invisible status cycling and rename tracking)
+Icomark is headless-only: commands are designed for terminal-manager
+keybindings and scripts. Running any binary without a command prints help.
 
 ## Install
 
-### CLI
+Install all three commands:
 
 ```sh
-go install github.com/geshido/ztabs@latest
+go install github.com/geshido/icomark/cmd/ztabs@latest
+go install github.com/geshido/icomark/cmd/atabs@latest
+go install github.com/geshido/icomark/cmd/htabs@latest
 ```
 
-Or from source:
+Or build from source:
 
 ```sh
-git clone https://github.com/geshido/ztabs
-cd ztabs
-go build -o ztabs .
-# put the binary somewhere on $PATH, e.g.
-mv ztabs ~/.local/bin/
+git clone https://github.com/geshido/icomark
+cd icomark
+go install ./cmd/...
 ```
 
-### Background plugin (optional but recommended)
+Go 1.22 or newer is required.
 
-The plugin does two things:
+## Commands
 
-1. Relays `MessagePlugin` pipes from your keybindings into `ztabs next|prev`
-   so status cycling happens without opening a visible pane.
-2. Watches Zellij's `TabUpdate` events and migrates the sidecar state when
-   a tab is renamed outside of `ztabs` (e.g. via Zellij's own rename mode).
-
-Build it:
+The command set is identical for all backends:
 
 ```sh
-rustup target add wasm32-wasip1
-cd plugin
-make release
-# produces plugin/target/wasm32-wasip1/release/ztabs-plugin.wasm
+htabs next                     # cycle status forward
+htabs prev                     # cycle status backward
+htabs set review               # assign a status by name
+htabs comment "waiting on CI"  # store a comment and show 💬
+htabs comment                  # clear the comment
+htabs sync                     # restore marks after a manual rename
+htabs status                   # print status, base label, and comment
 ```
 
-Point Zellij at the artifact (absolute path required — see keybinding
-examples below).
+Replace `htabs` with `ztabs` or `atabs` as appropriate.
 
-## Usage
+Shared flags can appear before or after the command:
 
-### Interactive TUI
+```text
+--target ID       operate on an explicit tab/session
+--socket PATH     use an explicit agterm or Herdr socket
+--state-key KEY   override the state scope
+--config PATH     use an explicit config file
+--                treat remaining arguments as literal values
+```
+
+Use `--` when comment text or a custom status name starts with a dash:
 
 ```sh
-ztabs
+htabs comment -- "-- waiting for deploy"
 ```
 
-Keys:
+## Configuration
 
-| Key            | Action                                  |
-| -------------- | --------------------------------------- |
-| `↑` / `k`      | Move cursor up                          |
-| `↓` / `j`      | Move cursor down                        |
-| `←` / `h`      | Cycle status backward                   |
-| `→` / `l`      | Cycle status forward (or `Tab` / space) |
-| `⏎`            | Jump to the selected tab and quit       |
-| `r`            | Rename the tab                          |
-| `c`            | Edit the tab's comment                  |
-| `J` / `K`      | Move the tab right / left in the bar    |
-| `q` / `Esc`    | Quit                                    |
+The canonical configuration is:
 
-### Headless
+```text
+$XDG_CONFIG_HOME/icomark/config.yml
+# default: ~/.config/icomark/config.yml
+```
+
+Example:
+
+```yaml
+statuses:
+  - name: none
+    prefix: ""
+  - name: wip
+    prefix: "🔨 "
+  - name: review
+    prefix: "👀 "
+  - name: test
+    prefix: "🧪 "
+  - name: done
+    prefix: "✅ "
+  - name: blocked
+    prefix: "🚫 "
+```
+
+The first status must be `none` with an empty prefix. Prefixes are matched
+longest-first. Status is persisted by name, so reordering entries is safe;
+renaming a persisted status is not.
+
+For migration, `ztabs` also reads the old `ztabs/config.yml`, and `atabs` reads
+`atabs/config.yml`, when the canonical Icomark config does not exist.
+
+## State and `sync`
+
+Canonical state lives under:
+
+```text
+$XDG_STATE_HOME/icomark/<backend>/<scope>.json
+# default: ~/.local/state/icomark/...
+```
+
+Entries are keyed by runtime tab/session ID and store the base label, status,
+and comment. A unique base-label fallback helps Zellij reconnect state after
+`resurrect`, where tab IDs can change.
+
+When a manual rename removes `🔨`/`💬` from a label, the runtime ID remains the
+same. Run `sync` to treat the visible text as the new base label and reapply the
+stored marks:
 
 ```sh
-ztabs next                    # cycle current tab status forward
-ztabs prev                    # cycle current tab status backward
-ztabs migrate-state OLD NEW   # rename the sidecar key after an external rename
-ztabs --exit-mode normal      # TUI, then drop Zellij back into Normal mode
+htabs sync
 ```
 
-## Zellij integration
+Old `ztabs` and `atabs` state files are read only when canonical state is
+absent. The next mutating command writes canonical Icomark state. Very unusual
+legacy scope names containing spaces or Unicode may require a manual state-file
+move because canonical filenames are sanitized.
 
-Add to your `~/.config/zellij/config.kdl`. Adjust paths to match where you
-installed the plugin `.wasm`.
+Zellij limitation: after `resurrect`, run an Icomark command before manually
+renaming a restored tab if its runtime ID changed. Otherwise neither the old ID
+nor old base label may match.
 
-### Open the TUI
+## Zellij
+
+### Direct keybindings
 
 ```kdl
 keybinds {
     shared_except "locked" {
-        bind "Alt s" {
-            Run "ztabs" "--exit-mode" "normal" {
-                floating true
-                close_on_exit true
-            }
-        }
+        bind "Alt ." { Run "ztabs" "next"; }
+        bind "Alt ," { Run "ztabs" "prev"; }
+        bind "Alt s" { Run "ztabs" "sync"; }
     }
 }
 ```
 
-### Cycle status without a pane flash
+A direct `Run` can briefly open a pane. The optional invisible plugin avoids
+that for `next`/`prev`.
 
-Requires the background plugin to be loaded at session start:
+### Optional invisible plugin
+
+Build it with Rust and the WASI target:
+
+```sh
+rustup target add wasm32-wasip1
+make -C integrations/zellij-plugin release
+```
+
+The artifact is:
+
+```text
+integrations/zellij-plugin/target/wasm32-wasip1/release/ztabs-plugin.wasm
+```
+
+Load it and send pipe messages:
 
 ```kdl
 load_plugins {
@@ -161,76 +197,79 @@ keybinds {
 }
 ```
 
-If you don't want the background plugin, you can use `Run "ztabs" "next"`
-instead — but it flashes a short-lived pane.
+The plugin only relays `next` and `prev`; `sync` can use a direct `Run` binding.
 
-## Configuration
+## agterm
 
-`ztabs` reads its config from the first file that exists:
+Add commands to `~/.config/agterm/keymap.conf`. An absolute binary path is
+recommended because the GUI environment may have a restricted `PATH`:
 
-1. `$XDG_CONFIG_HOME/ztabs/config.yml`
-2. `~/.config/ztabs/config.yml`
-
-If neither exists the built-in defaults are used. Example:
-
-```yaml
-statuses:
-  - name: none
-    prefix: ""
-  - name: wip
-    prefix: "🔨 "
-  - name: review
-    prefix: "👀 "
-  - name: test
-    prefix: "🧪 "
-  - name: done
-    prefix: "✅ "
-  - name: blocked
-    prefix: "🚫 "
+```conf
+command "atabs next" opt+. /absolute/path/to/atabs next --target "$AGT_SESSION_ID" --socket "$AGT_SOCKET" --state-key "$AGT_WINDOW_ID"
+command "atabs prev" opt+, /absolute/path/to/atabs prev --target "$AGT_SESSION_ID" --socket "$AGT_SOCKET" --state-key "$AGT_WINDOW_ID"
+command "atabs sync" opt+s /absolute/path/to/atabs sync --target "$AGT_SESSION_ID" --socket "$AGT_SOCKET" --state-key "$AGT_WINDOW_ID"
 ```
 
-Notes:
+Reload with:
 
-- The first status should be a "no status" entry with an empty prefix.
-- `prefix` is matched literally against the start of the tab name, so include
-  the trailing space if you want one between the emoji and the tab name.
-- Status is persisted by its `name`, so reordering statuses in the config is
-  safe; renaming them is not (the old name becomes orphaned in the sidecar).
-
-## State file
-
-Per-session state (comments + current status per tab) lives at:
-
-```
-$XDG_STATE_HOME/ztabs/<session-name>.json
-# default: ~/.local/state/ztabs/<session-name>.json
+```sh
+agtermctl keymap reload
 ```
 
-The file is keyed by the tab's *base name* (the tab name stripped of status
-and 💬 prefixes), so renaming a tab through `ztabs` (or through Zellij, with
-the background plugin running) migrates the entry automatically.
+## Herdr
 
-Format:
+Herdr status remains tab-scoped: `htabs` keeps the status marker in each tab
+label. After every mutation it also publishes the marked tabs' status icons, in
+tab order, to the owning workspace's `$status` metadata token. Tabs with the
+`none` status are omitted.
 
-```json
-{
-  "auth-refactor": {
-    "comment": "waiting on review from @alice",
-    "status": "wip"
-  }
-}
+Render the aggregate in the expanded Space sidebar:
+
+```toml
+[ui]
+sidebar.spaces.rows = [["state_icon", "workspace", "$status"]]
 ```
 
-## How it works
+Add detached shell commands to `~/.config/herdr/config.toml`:
 
-- Status is encoded as an emoji **prefix** on the Zellij tab name, which
-  `ztabs` drives via `zellij action rename-tab-by-id`. The tab name is the
-  source of truth for display; the sidecar is the source of truth for
-  comments and for restoring status after `resurrect`.
-- Comments live only in the sidecar; the 💬 indicator in the tab name is
-  cosmetic and shows that "this tab has a comment — open `ztabs` to read it."
-- The Rust plugin is deliberately invisible (`hide_self()`) — its only job is
-  to shell out to the `ztabs` CLI on pipe messages and on detected renames.
+```toml
+[[keys.command]]
+key = "prefix+a"
+type = "shell"
+command = "htabs next --target \"$HERDR_ACTIVE_TAB_ID\" --socket \"$HERDR_SOCKET_PATH\""
+description = "cycle tab status forward"
+
+[[keys.command]]
+key = "prefix+shift+a"
+type = "shell"
+command = "htabs prev --target \"$HERDR_ACTIVE_TAB_ID\" --socket \"$HERDR_SOCKET_PATH\""
+description = "cycle tab status backward"
+
+[[keys.command]]
+key = "prefix+shift+s"
+type = "shell"
+command = "htabs sync --target \"$HERDR_ACTIVE_TAB_ID\" --socket \"$HERDR_SOCKET_PATH\""
+description = "restore tab status marks"
+```
+
+Use an absolute path to `htabs` if it is not visible in Herdr's `PATH`, then
+reload Herdr configuration with `herdr server reload-config`.
+
+Herdr custom commands expose the focused tab as `HERDR_ACTIVE_TAB_ID`.
+Commands launched from a managed pane can also omit `--target`; `htabs` falls
+back to `HERDR_TAB_ID` and then `HERDR_ACTIVE_TAB_ID`.
+
+Workspace metadata is display-only and is not restored after a Herdr server
+restart. Run `htabs sync` from any tab to republish the aggregates for every
+live workspace from the visible tab labels.
+
+## Development
+
+```sh
+go test ./...
+go vet ./...
+go build ./cmd/ztabs ./cmd/atabs ./cmd/htabs
+```
 
 ## License
 
