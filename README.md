@@ -4,13 +4,14 @@ Icomark adds lightweight workflow marks to terminal tabs and sessions. It uses
 emoji prefixes such as `🔨`, `👀`, `🧪`, `✅`, and `🚫`, plus an optional `💬`
 marker for comments.
 
-One shared core powers three backend-specific commands:
+One shared core powers four backend-specific commands:
 
 | Command | Target |
 | --- | --- |
 | `ztabs` | Zellij tabs |
 | `atabs` | agterm sessions |
 | `htabs` | Herdr tabs |
+| `rtabs` | Rex windows (tabs) |
 
 ```text
 🔨 auth-refactor
@@ -24,21 +25,25 @@ keybindings and scripts. Running any binary without a command prints help.
 
 ## Install
 
-Install all three commands:
+Install only the command for your terminal manager. Each command works independently:
 
 ```sh
 go install github.com/geshido/icomark/cmd/ztabs@latest
 go install github.com/geshido/icomark/cmd/atabs@latest
 go install github.com/geshido/icomark/cmd/htabs@latest
+go install github.com/geshido/icomark/cmd/rtabs@latest
 ```
 
-Or build from source:
+Or build your chosen command from source (Rex example):
 
 ```sh
 git clone https://github.com/geshido/icomark
 cd icomark
-go install ./cmd/...
+go install ./cmd/rtabs
 ```
+
+Replace `rtabs` with your chosen command. To install all commands, use
+`go install ./cmd/...`.
 
 Go 1.22 or newer is required.
 
@@ -56,13 +61,13 @@ htabs sync                     # restore marks after a manual rename
 htabs status                   # print status, base label, and comment
 ```
 
-Replace `htabs` with `ztabs` or `atabs` as appropriate.
+Replace `htabs` with `ztabs`, `atabs`, or `rtabs` as appropriate.
 
 Shared flags can appear before or after the command:
 
 ```text
 --target ID       operate on an explicit tab/session
---socket PATH     use an explicit agterm or Herdr socket
+--socket PATH     use an explicit agterm/Herdr socket or Rex server address
 --state-key KEY   override the state scope
 --config PATH     use an explicit config file
 --                treat remaining arguments as literal values
@@ -263,12 +268,83 @@ Workspace metadata is display-only and is not restored after a Herdr server
 restart. Run `htabs sync` from any tab to republish the aggregates for every
 live workspace from the visible tab labels.
 
+## Rex
+
+`rtabs` marks Rex windows (tabs), not individual blocks (panes). It uses window
+labels because Rex does not currently expose custom window metadata or badges.
+Native OSC 7501 program status is separate and is not changed by Icomark.
+
+After each mutation, `rtabs` prefixes the owning session's name with its marked
+tabs' status icons: `🔨👀✅ Project`. Each icon appears once, in first-tab order,
+with no spaces between icons and one space before the name. Tabs with `none`
+and comment-only markers are omitted. Leading configured status icons are
+replaced on updates and removed when no tabs are marked, like marks on tabs.
+The old ` [icomark: ...]` suffix is migrated automatically. Custom status prefixes
+must not contain `[icomark:`. Use the session ID in scripts because the full
+displayed name changes.
+
+`rtabs sync` also rebuilds the current session's summary from visible tab labels.
+Run it after closing or reordering tabs, or manually renaming a session. Other
+sessions are updated when you run an Icomark mutation in them.
+
+Inside a Rex terminal, `rtabs` uses the window containing `REX_BLOCK`, even if
+another tab is active. Rex resolves `--target` as a window ID, label, position,
+or ID suffix within `REX_SESSION`; use full IDs in scripts. Rex reports missing
+or ambiguous targets without renaming anything.
+
+```sh
+rtabs next
+rtabs set review --target 'window:<uuid>'
+rtabs status --socket 'unix:///absolute/path/to/rex/server.sock'
+```
+
+`--socket` overrides `REX_SERVER` and accepts the same server addresses or host
+labels as `rex -S`. State is scoped by the resolved Rex session ID, with window
+IDs as entry keys. `--state-key` only overrides the state filename, not the Rex
+session. To select another session, set `REX_SESSION` explicitly.
+
+`rtabs` uses `$REX_BIN_DIR/rex` when set, otherwise `rex` from `PATH`. Ensure one
+is available to commands launched by Rex, whose environment can differ from
+an interactive shell. Rex limits window labels, including Icomark's marks, to
+128 characters; a rejected window rename does not save new state. If the session
+summary exceeds this limit, `rtabs` reports an error and leaves the session name
+unchanged; the tab's status has already been saved.
+
+Add this to `~/.config/rex/init.lua`, replacing the binary path:
+
+```lua
+local function icomark(command)
+  return function(ctx)
+    if not ctx.session_id or not ctx.block_id then
+      error("Icomark requires a focused Rex terminal", 0)
+    end
+    local result, err = rex.exec({ "/absolute/path/to/rtabs", command }, {
+      env = { REX_SESSION = ctx.session_id, REX_BLOCK = ctx.block_id },
+      timeout = 5,
+    })
+    if not result then error(err, 0) end
+    if not result.ok then error(result.stderr, 0) end
+  end
+end
+
+rex.action{ name = "icomark_next", title = "Next Workflow Status", run = icomark("next") }
+rex.action{ name = "icomark_prev", title = "Previous Workflow Status", run = icomark("prev") }
+rex.action{ name = "icomark_sync", title = "Restore Workflow Marks", run = icomark("sync") }
+rex.bind("alt+.", "icomark_next")
+rex.bind("alt+,", "icomark_prev")
+rex.bind("alt+s", "icomark_sync")
+```
+
+Run `rex config check` and `rex config reload`. Actions run without opening a
+pane and also appear in the command palette. After a manual tab rename,
+`rtabs sync` reapplies its saved status and comment marker.
+
 ## Development
 
 ```sh
 go test ./...
 go vet ./...
-go build ./cmd/ztabs ./cmd/atabs ./cmd/htabs
+go build ./cmd/...
 ```
 
 ## License
